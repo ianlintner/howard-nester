@@ -120,6 +120,220 @@ If a game expands beyond 32KB PRG-ROM (code) or 8KB CHR-ROM (graphics), select a
 
 ---
 
+## Graphics & Asset Pipeline: Pixel Art, CHR, and Tiled
+
+Developing visual assets for the NES requires translating modern raster images and map formats into the specific byte configurations expected by the Picture Processing Unit (PPU).
+
+### 1. NES Graphics Constraints
+*   **Tiles (Pattern Tables)**: All graphics are stored as 8x8 pixel tiles. Each pixel has a 2-bit color index, meaning a tile can contain up to 4 colors (including transparency/background).
+*   **CHR-ROM vs CHR-RAM**:
+    *   *CHR-ROM*: Graphics are pre-baked onto a ROM chip. Swapping tiles is instantaneous via bank switching, but tiles cannot be altered dynamically pixel-by-pixel.
+    *   *CHR-RAM*: Graphics are uploaded from PRG-ROM into a RAM chip during startup or VBlank. This allows dynamic tile rendering (useful for destructible environments or procedurally generated text).
+*   **Palettes**: 
+    *   The NES has a fixed master palette of 64 hardware colors.
+    *   You can define **4 Background Palettes** and **4 Sprite Palettes**.
+    *   Each palette contains 3 custom colors, plus a shared transparent/background color at index 0 (total of 13 unique colors on screen per frame).
+*   **Attribute Tables**: The background is divided into 16x16 pixel blocks (2x2 tiles). Each block is assigned one of the 4 background palettes using Attribute Tables at the end of each nametable (e.g., `$23C0`–`$23FF`).
+
+### 2. Tiled Map Editor Integration
+To design background levels, configure **Tiled** as follows:
+*   Set your Tile Size to 8x8 pixels (or 16x16 if using metatiles).
+*   Keep your tilesets constrained to the active 4 background palettes.
+*   **Pipeline Translation**: Export the map from Tiled as a JSON or CSV array. Use an intermediate script (Python/Node) to compress the map using **Run-Length Encoding (RLE)** or **Metatile compression** (combining four 8x8 tiles into a single byte pointing to a 16x16 metatile table). This shrinks a 1024-byte nametable down to less than 150 bytes.
+
+### 3. LLM-Driven Asset Generation (GPT-5.5 & Gemini Prompting)
+Modern LLMs can be utilized to generate raw tile bytes, sprite assembly tables, or custom conversion scripts. 
+
+*   **Rule 1**: LLMs cannot generate binary files directly. Instead, ask them to output raw hexadecimal byte tables, `.db` assembly directives, or Python conversion code.
+*   **Rule 2**: When prompting for pixel art, specify the 2-bit color index constraint per tile.
+
+#### Sample Prompt: Sprite Asset to ca65 Hex Table
+```text
+You are an NES CHR graphics generator. I need the raw 16-byte hex format representing an 8x8 pixel tile for a simple "Coin" icon.
+Constraints:
+- 2 bits-per-pixel (planar format: Plane 1 is first 8 bytes, Plane 2 is second 8 bytes).
+- Color 0: Transparent
+- Color 1: Inner yellow (index %01)
+- Color 2: Outer gold outline (index %10)
+- Color 3: Highlights (index %11)
+
+Design the coin as a circular shape with highlights. Provide the 16 bytes in ca65 .byte format and explain which pixel index each bit represents.
+```
+
+#### Sample Prompt: PNG-to-CHR Python Converter Script
+```text
+Write a robust Python 3 script that takes a 128x128 PNG image containing a tileset of 8x8 NES tiles and outputs a raw .chr binary.
+The script must:
+1. Verify that the image width and height are multiples of 8.
+2. Read the image and map the pixels to a 4-color palette (0, 1, 2, 3) based on brightness or direct color values.
+3. Convert each 8x8 block into the NES PPU format:
+   - First 8 bytes define Bit 0 of the color index for each of the 8 rows.
+   - Next 8 bytes define Bit 1 of the color index for each of the 8 rows.
+4. Output a clean binary file (.chr). Include error handling for invalid sizes.
+```
+
+---
+
+## Audio Engine: MIDI Soundtracks & Direct SFX Integration
+
+The Audio Processing Unit (APU) generates sound using five dedicated hardware channels. Managing music and sound effects requires a balance of timing, register mapping, and driver selection.
+
+### 1. APU Channels & Characteristics
+*   **Pulse 1 & Pulse 2 ($4000–$4007)**: Square waves with four selectable duty cycles (12.5%, 25%, 50%, 75%). Used for melodies, leads, and harmonies. Features hardware sweep units for pitch bends.
+*   **Triangle ($4008–$400B)**: Smooth triangle wave. Lacks volume control (always runs at full volume or off), but ideal for deep basslines and rapid arpeggios.
+*   **Noise ($400C–$400F)**: Generates pseudo-random white noise. Supports two modes: metallic/looping noise (sci-fi SFX, laser guns) and standard hiss noise (drums, snare, wind, explosions).
+*   **DMC ($4010–$4013)**: Delta Modulation Channel. Plays 1-bit delta-compressed PCM audio samples. Great for speech or heavy drums, but consumes substantial PRG-ROM space.
+
+### 2. MIDI-to-NES Music Workflow
+To create complete soundtracks using a traditional MIDI workflow:
+1.  **Compose in a DAW**: Write your music in a digital audio workstation (FL Studio, Reaper, Ableton).
+2.  **Monophonic Constraint**: Ensure each track is strictly monophonic (one note at a time).
+    *   Track 1 -> Pulse 1
+    *   Track 2 -> Pulse 2
+    *   Track 3 -> Triangle
+    *   Track 4 -> Noise (use simple drum mappings)
+3.  **Export & Import into FamiStudio / FamiTracker**:
+    *   Export your tracks as standard `.mid` files.
+    *   Import the MIDI file into **FamiStudio**. FamiStudio will automatically assign the tracks to the correct NES channels.
+    *   *Refine Envelopes*: Standard MIDI notes sound flat on the APU. Apply volume decay, duty cycle sequences, and pitch envelopes to the instruments inside FamiStudio to achieve a rich, authentic retro feel.
+4.  **Driver Export**: Export the song as a **FamiTone2** or **ggsound** assembly driver file (`music_data.s`) along with sound effect definitions (`sfx.s`).
+
+### 3. Creating Sound Effects (SFX)
+Sound effects can be triggered in two ways: through a driver API or by writing directly to hardware registers.
+
+#### Method A: Register-Level SFX (Direct Register Manipulation)
+For quick, driver-less sound effects, write directly to the APU registers during gameplay cycles.
+
+*   *Example: Exploding Noise Sound ($400C–$400F)*:
+    ```assembly
+    LDA #$3F      ; Envelopes: Constant volume, volume level 15 (max)
+    STA $400C
+    LDA #$1C      ; Frequency: Periodic noise mode, shift frequency
+    STA $400E
+    LDA #$18      ; Length Counter load
+    STA $400F
+    ```
+*   *Example: Coin/Laser Pulse Sweep ($4000–$4003)*:
+    ```assembly
+    LDA #$87      ; Duty cycle 50%, constant volume, decay speed
+    STA $4000
+    LDA #$93      ; Enable sweep, shift count 3, sweep downwards
+    STA $4001
+    LDA #$C0      ; Low byte of frequency timer
+    STA $4002
+    LDA #$08      ; High byte of frequency timer + start length counter
+    STA $4003
+    ```
+
+#### Method B: FamiTone2 Driver Triggering
+If using a standard audio driver, include the exported assembly assembly sound assets and call the engine's play macro:
+```assembly
+; Trigger inside gameplay logic when an event occurs
+LDA #SFX_EXPLOSION  ; SFX index in your exported .sfx file
+LDX #$00            ; Play on Channel 0 (Pulse 1 Priority)
+JSR FamiToneSfxPlay ; Let the driver handle frame-by-step register updates
+```
+
+---
+
+## Scene State Machine & Screen Flows
+
+A commercial-grade NES game is structured around a central Game State Machine. Transitions between screens (Title, Gameplay, Pause, Game Over) must be handled gracefully to prevent PPU artifacting and code lockups.
+
+```
+                  ┌──────────────┐
+                  │  Cold Reset  │
+                  └──────┬───────┘
+                         ▼
+                  ┌──────────────┐  Start Press
+                  │ Title Screen ├──────────────┐
+                  └──────▲───────┘              │
+                         │                      ▼
+                         │               ┌──────────────┐
+                  Game   │               │   Gameplay   │
+                  Over   │               │  Main Loop   │
+                         │               └──────┬───────┘
+                         │                 ▲    │
+                         │    Start Press  │    │ Player
+                         │    (Toggle)     │    │ Dies /
+                  ┌──────┴───────┐       ┌─┴────▼──────┐ Wins
+                  │  Game Over   │       │ Pause Screen│
+                  │ (Win/Lose)   │       └─────────────┘
+                  └──────────────┘
+```
+
+### 1. Game State Jump Table (6502 Assembly)
+Instead of nesting complex branch instructions (`BEQ`/`BNE`), implement a jump table based on a state variable `gameState`:
+
+```assembly
+; Zero page allocations
+.zeropage
+gameState: .res 1      ; 0=Title, 1=Gameplay, 2=Pause, 3=GameOver, 4=Victory
+
+.code
+UpdateGame:
+    LDA gameState
+    ASL A               ; Multiply state by 2 to get word index
+    TAX
+    LDA StateJumpTable, x
+    STA tmp_ptr
+    LDA StateJumpTable+1, x
+    STA tmp_ptr+1
+    JMP (tmp_ptr)       ; Indirect jump to the active state function
+
+StateJumpTable:
+    .addr UpdateTitleScreen
+    .addr UpdateGameplay
+    .addr UpdatePauseScreen
+    .addr UpdateGameOver
+    .addr UpdateVictoryScreen
+```
+
+### 2. Scene-by-Scene Implementation Patterns
+
+#### Scene A: Title / Start Screen
+*   **Initialization**: 
+    1.  Turn off rendering (`LDA #0, STA $2001`).
+    2.  Write your game logo, options text, and palette configurations to the PPU nametables (`$2000`+).
+    3.  Turn rendering back on (`LDA #%00011110, STA $2001`) during the next VBlank.
+*   **Update Loop (`UpdateTitleScreen`)**:
+    1.  Poll the controllers. If the "Start" button is pressed, play a transition SFX, wait a brief delay, and switch `gameState` to `1` (Gameplay).
+    2.  *Polish*: Blink the "PRESS START" text. Track a frame counter variable; every 30 frames, write transparency to the palette of that text, then write white/yellow for the next 30 frames.
+
+#### Scene B: Basic Main Game Loop Scene
+*   **Update Loop (`UpdateGameplay`)**:
+    1.  **Input**: Poll controllers, save button presses to RAM buffers.
+    2.  **Physics/AI**: Process movement speeds, apply gravity, move enemies.
+    3.  **Collisions**: Check player bounding boxes against enemies and metatiles.
+    4.  **Draw Queueing**: Do *not* write directly to the PPU here. If an enemy dies, add their tile coordinates and replacement indices to a CPU circular buffer (`ppu_draw_queue`).
+    5.  **State Check**: If player health reaches 0, change `gameState` to `3` (Game Over). If level completion conditions are met, switch to `4` (Victory).
+    6.  **VBlank Sync**: Wait for NMI to finish drawing before looping.
+*   **NMI (VBlank Routine)**:
+    1.  Trigger Sprite DMA (`LDA #$02, STA $4014`) to render players and enemies.
+    2.  Check `ppu_draw_queue`. If entries exist, write those tiles to PPU `$2006`/`$2007`.
+    3.  Reset camera scrolling registers `$2005` to prevent visual sliding.
+
+#### Scene C: Pause Screen
+*   **Entering Pause**: When "Start" is pressed during gameplay, set `gameState` to `2`.
+*   **Update Loop (`UpdatePauseScreen`)**:
+    1.  **Freeze States**: Do *not* process player velocity, physics, collisions, or enemy AI.
+    2.  **Maintain Drivers**: Keep updating the music engine (`jsr FamiToneUpdate`) and NMI sync loops so the background track continues playing and the screen does not crash or flicker.
+    3.  **UI Overlay**: Draw "PAUSE" to the screen. To avoid modifying complex background tiles, render "PAUSE" using a row of pre-positioned static sprites or a tiny, clean sub-palette modification.
+    4.  **Resume**: If "Start" is pressed again, clear the "PAUSE" text, play resume SFX, and restore `gameState` to `1` (Gameplay).
+
+#### Scene D: Game Over Screen (Lose, Continue, Win)
+*   **Loss / Continue**:
+    1.  On player death, fade music out, disable sprite rendering, and draw the "GAME OVER" background screen.
+    2.  Offer a menu: "CONTINUE" or "QUIT".
+    3.  *Continue*: If selected, reset player lives to 3, keep current score, reload the active level index, and jump to Gameplay.
+    4.  *Quit*: If selected, reset all variables, high scores, and level indicators, and transition back to the Title Screen.
+*   **Victory / Level Transition**:
+    1.  Stop action, play a short victory fanfare, and lock player inputs.
+    2.  Fade palettes down to black over several frames to prevent visual jarring.
+    3.  Increment the level variable, load the new map data, reset the player coordinates, and boot the gameplay loop with a fade-in sequence.
+
+---
+
 ## Agentic Development Workflow
 
 Follow this cycle for every development ticket:
