@@ -88,9 +88,9 @@ Refer to these established templates from the NESdev Projects wiki to bypass boi
     *   *Details*: Minimal, clean template using the ca65 macro assembler. Demonstrates standard system initialization, safe NMI-to-Main update loop, basic controller reading, sprite drawing, and audio loading.
 2.  **tepples' NROM Template (ca65)**:
     *   *Details*: Extremely thorough, hardware-safe starter template targeting the standard Mapper 0 (NROM). Includes solid multi-controller polling, raster split templates, and hardware-correct reset/init sequences.
-3.  **NES Starter Kit (C-Language)**:
+3.  **NES Starter Kit (C-Language) [RECOMMENDED FOR FAST AGENT START]**:
     *   *Repository*: `https://github.com/igwgames/nes-starter-kit`
-    *   *Details*: A complete pipeline for building NES games in C using `cc65` and `neslib`. Includes tile manipulation, metasprite systems, sound drivers, scrolling, and map engines. Perfect for quick logic prototyping.
+    *   *Details*: A complete pipeline for building NES games in C using `cc65` and `neslib`. Includes tile manipulation, metasprite systems, sound drivers, scrolling, and map engines. **This is the recommended template for agents to get started fast and prototype game logic rapidly.**
 4.  **Nerdy Nights ca65 Conversions**:
     *   *Details*: Community-maintained ca65-compatible versions of the classic "Nerdy Nights" assembly tutorials, preserving step-by-step logic while adhering to modern cc65 linking styles.
 
